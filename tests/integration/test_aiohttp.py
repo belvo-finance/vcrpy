@@ -1,5 +1,6 @@
 import contextlib
 import logging
+import urllib.parse
 
 import pytest
 
@@ -179,9 +180,8 @@ def test_params_same_url_distinct_params(tmpdir, scheme):
 
     other_params = {"other": "params"}
     with vcr.use_cassette(str(tmpdir.join("get.yaml"))) as cassette:
-        response, cassette_response_text = get(url, output="text", params=other_params)
-        assert "No match for the request" in cassette_response_text
-        assert response.status == 599
+        with pytest.raises(vcr.errors.CannotOverwriteExistingCassetteException):
+            get(url, output="text", params=other_params)
 
 
 def test_params_on_url(tmpdir, scheme):
@@ -302,3 +302,43 @@ def test_double_requests(tmpdir):
 
         # Now that we made both requests, we should have played both.
         assert cassette.play_count == 2
+
+
+def test_cookies(scheme, tmpdir):
+    async def run(loop):
+        cookies_url = scheme + (
+            "://httpbin.org/response-headers?"
+            "set-cookie=" + urllib.parse.quote("cookie_1=val_1; Path=/") + "&"
+            "Set-Cookie=" + urllib.parse.quote("Cookie_2=Val_2; Path=/")
+        )
+        home_url = scheme + "://httpbin.org/"
+        tmp = str(tmpdir.join("cookies.yaml"))
+        req_cookies = {"Cookie_3": "Val_3"}
+        req_headers = {"Cookie": "Cookie_4=Val_4"}
+
+        # ------------------------- Record -------------------------- #
+        with vcr.use_cassette(tmp) as cassette:
+            async with aiohttp.ClientSession(loop=loop) as session:
+                cookies_resp = await session.get(cookies_url)
+                home_resp = await session.get(home_url, cookies=req_cookies, headers=req_headers)
+                assert cassette.play_count == 0
+        assert_responses(cookies_resp, home_resp)
+
+        # -------------------------- Play --------------------------- #
+        with vcr.use_cassette(tmp, record_mode="none") as cassette:
+            async with aiohttp.ClientSession(loop=loop) as session:
+                cookies_resp = await session.get(cookies_url)
+                home_resp = await session.get(home_url, cookies=req_cookies, headers=req_headers)
+                assert cassette.play_count == 2
+        assert_responses(cookies_resp, home_resp)
+
+    def assert_responses(cookies_resp, home_resp):
+        assert cookies_resp.cookies.get("cookie_1").value == "val_1"
+        assert cookies_resp.cookies.get("Cookie_2").value == "Val_2"
+        request_cookies = home_resp.request_info.headers["cookie"]
+        assert "cookie_1=val_1" in request_cookies
+        assert "Cookie_2=Val_2" in request_cookies
+        assert "Cookie_3=Val_3" in request_cookies
+        assert "Cookie_4=Val_4" in request_cookies
+
+    run_in_loop(run)
