@@ -75,7 +75,13 @@ def build_response(vcr_request, vcr_response, history):
     # cookies
     for hdr in response.headers.getall(hdrs.SET_COOKIE, ()):
         try:
-            response.cookies.load(hdr)
+            cookies = SimpleCookie(hdr)
+            for cookie_name, cookie in cookies.items():
+                expires = cookie.get("expires", "").strip()
+                if expires:
+                    log.debug('Ignoring expiration date: %s="%s"', cookie_name, expires)
+                cookie["expires"] = ""
+                response.cookies.load(cookie.output(header="").strip())
         except CookieError as exc:
             log.warning("Can not load response cookies: %s", exc)
 
@@ -118,7 +124,7 @@ def play_responses(cassette, vcr_request):
     # If we're following redirects, continue playing until we reach
     # our final destination.
     while 300 <= response.status <= 399:
-        next_url = URL(response.url).with_path(response.headers["location"])
+        next_url = URL(response.url).join(URL(response.headers["location"]))
 
         # Make a stub VCR request that we can then use to look up the recorded
         # VCR request saved to the cassette. This feels a little hacky and
@@ -245,6 +251,8 @@ def vcr_request(cassette, real_request):
         if cassette.can_play_response_for(vcr_request):
             log.info("Playing response for {} from cassette".format(vcr_request))
             response = play_responses(cassette, vcr_request)
+            for redirect in response.history:
+                self._cookie_jar.update_cookies(redirect.cookies, redirect.url)
             self._cookie_jar.update_cookies(response.cookies, response.url)
             return response
 
